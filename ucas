@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Static Grayscale and Inverted Squares with Custom Effects</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: black;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let video;
+
+    // Define expanded color palette
+    const palette = [
+      { r: 0, g: 0, b: 0 },          // Black
+      { r: 255, g: 255, b: 255 },    // White
+      { r: 191, g: 225, b: 7 },      // #BFE107 (Bright Yellow-Green)
+      { r: 81, g: 102, b: 157 },     // #51669D (Dusky Blue)
+      { r: 217, g: 83, b: 30 },      // #D9531E (Bright Orange-Red)
+      { r: 246, g: 166, b: 219 },    // #F6A6DB (Soft Pink)
+      { r: 254, g: 244, b: 77 }      // #FEF44D (Bright Yellow)
+    ];
+
+    // Static positions and sizes for the squares
+    const grayscaleSquare = { x: 50, y: 50, size: 150 };
+    const invertedSquare = { size: 150 }; // Bottom-right corner, calculated dynamically
+
+    async function setupCamera() {
+      video = document.createElement('video');
+      video.autoplay = true;
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        await video.play();
+        startProcessing();
+      } catch (error) {
+        console.error("Error accessing the webcam:", error);
+      }
+    }
+
+    function closestPaletteColor(r, g, b) {
+      // Find the closest color in the palette to the current pixel color
+      return palette.reduce((closest, color) => {
+        const dist = Math.sqrt((r - color.r) ** 2 + (g - color.g) ** 2 + (b - color.b) ** 2);
+        return dist < closest.dist ? { color, dist } : closest;
+      }, { color: palette[0], dist: Infinity }).color;
+    }
+
+    function grayscale(r, g, b) {
+      const avg = 0.299 * r + 0.587 * g + 0.114 * b;
+      return { r: avg, g: avg, b: avg };
+    }
+
+    function invertToBlackAndGreen(r, g, b) {
+      // Invert the color and map it to either black or #BDDF0E (a bright greenish-yellow)
+      const inverted = 255 - ((r + g + b) / 3); // Invert based on average brightness
+      return inverted > 127 ? { r: 189, g: 223, b: 14 } : { r: 0, g: 0, b: 0 }; // #BDDF0E or Black
+    }
+
+    function startProcessing() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      const lowResPixelSize = 20;   // Low-res dither size for color
+      const highResPixelSize = 10;  // High-res checkerboard dither size
+      const lowThreshold = 100;     // Threshold for pixel sorting
+      const highThreshold = 200;    // Threshold for checkerboard pattern
+
+      function draw() {
+        // Clear the canvas and apply mirroring
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1); // Mirror the entire canvas
+
+        // Draw the webcam feed onto the canvas
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let data = imageData.data;
+
+        // Apply palette color mapping to all pixels initially
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const { r: pr, g: pg, b: pb } = closestPaletteColor(r, g, b);
+          data[i] = pr;
+          data[i + 1] = pg;
+          data[i + 2] = pb;
+        }
+
+        // Process rows for pixel sorting and dithering based on thresholds
+        for (let y = 0; y < canvas.height; y++) {
+          let rowPixels = [];
+
+          // Collect pixels in the row
+          for (let x = 0; x < canvas.width; x++) {
+            const index = (y * canvas.width + x) * 4;
+            const r = data[index];
+            const g = data[index + 1];
+            const b = data[index + 2];
+            const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+
+            // Check if the current pixel is within the static grayscale square
+            if (x >= grayscaleSquare.x && x < grayscaleSquare.x + grayscaleSquare.size &&
+                y >= grayscaleSquare.y && y < grayscaleSquare.y + grayscaleSquare.size) {
+              const gray = grayscale(r, g, b); // Convert to grayscale
+              data[index] = gray.r;
+              data[index + 1] = gray.g;
+              data[index + 2] = gray.b;
+              continue; // Skip further processing for pixels in this square
+            }
+
+            if (brightness < lowThreshold) {
+              // Pixel sorting for low brightness
+              rowPixels.push({ index, brightness });
+            } else if (brightness < highThreshold) {
+              // Apply low-res color dithering for mid brightness
+              if (x % lowResPixelSize === 0 && y % lowResPixelSize === 0) {
+                const { r, g, b } = {
+                  r: data[index],
+                  g: data[index + 1],
+                  b: data[index + 2],
+                };
+                for (let dy = 0; dy < lowResPixelSize; dy++) {
+                  for (let dx = 0; dx < lowResPixelSize; dx++) {
+                    const ditherIndex = ((y + dy) * canvas.width + (x + dx)) * 4;
+                    if (ditherIndex < data.length) {
+                      data[ditherIndex] = r;
+                      data[ditherIndex + 1] = g;
+                      data[ditherIndex + 2] = b;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Apply checkerboard pattern for high brightness
+              const isCheckerboard = ((x / highResPixelSize) % 2) ^ ((y / highResPixelSize) % 2);
+              const bwColor = isCheckerboard ? 255 : 0; // White and black checkerboard
+              for (let dy = 0; dy < highResPixelSize; dy++) {
+                for (let dx = 0; dx < highResPixelSize; dx++) {
+                  const ditherIndex = ((y + dy) * canvas.width + (x + dx)) * 4;
+                  if (ditherIndex < data.length) {
+                    data[ditherIndex] = bwColor;
+                    data[ditherIndex + 1] = bwColor;
+                    data[ditherIndex + 2] = bwColor;
+                  }
+                }
+              }
+            }
+          }
+
+          // Sort row pixels by brightness for pixels below the low threshold
+          rowPixels.sort((a, b) => a.brightness - b.brightness);
+
+          // Apply sorted pixels back to the imageData
+          for (let i = 0; i < rowPixels.length; i++) {
+            const { index } = rowPixels[i];
+            const sortedIndex = (y * canvas.width + i) * 4;
+            data[sortedIndex] = data[index];
+            data[sortedIndex + 1] = data[index + 1];
+            data[sortedIndex + 2] = data[index + 2];
+            data[sortedIndex + 3] = data[index + 3];
+          }
+        }
+
+        // Put the processed image data back to the canvas
+        ctx.putImageData(imageData, 0, 0);
+
+        // Draw the unaltered grayscale square on top
+        ctx.drawImage(video, grayscaleSquare.x, grayscaleSquare.y, grayscaleSquare.size, grayscaleSquare.size, grayscaleSquare.x, grayscaleSquare.y, grayscaleSquare.size, grayscaleSquare.size);
+        let squareImageData = ctx.getImageData(grayscaleSquare.x, grayscaleSquare.y, grayscaleSquare.size, grayscaleSquare.size);
+        let squareData = squareImageData.data;
+        for (let i = 0; i < squareData.length; i += 4) {
+          const gray = grayscale(squareData[i], squareData[i + 1], squareData[i + 2]);
+          squareData[i] = gray.r;
+          squareData[i + 1] = gray.g;
+          squareData[i + 2] = gray.b;
+        }
+        ctx.putImageData(squareImageData, grayscaleSquare.x, grayscaleSquare.y);
+
+        // Draw the inverted black and green square in the bottom-right corner
+        const invertedX = canvas.width - invertedSquare.size - 50;
+        const invertedY = canvas.height - invertedSquare.size - 50;
+        ctx.drawImage(video, invertedX, invertedY, invertedSquare.size, invertedSquare.size, invertedX, invertedY, invertedSquare.size, invertedSquare.size);
+        let invertedImageData = ctx.getImageData(invertedX, invertedY, invertedSquare.size, invertedSquare.size);
+        let invertedData = invertedImageData.data;
+        for (let i = 0; i < invertedData.length; i += 4) {
+          const inverted = invertToBlackAndGreen(invertedData[i], invertedData[i + 1], invertedData[i + 2]);
+          invertedData[i] = inverted.r;
+          invertedData[i + 1] = inverted.g;
+          invertedData[i + 2] = inverted.b;
+        }
+        ctx.putImageData(invertedImageData, invertedX, invertedY);
+
+        ctx.restore(); // Restore the context to avoid affecting future drawings
+        requestAnimationFrame(draw);
+      }
+
+      draw();
+    }
+
+    setupCamera();
+  </script>
+</body>
+</html>
